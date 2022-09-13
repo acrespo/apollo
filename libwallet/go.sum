@@ -86,6 +86,8 @@ github.com/champo/mobile v0.0.0-20220503145505-51a7737dc434 h1:7KHSIWZ0Lc70SI4dT
 github.com/champo/mobile v0.0.0-20220503145505-51a7737dc434/go.mod h1:pe2sM7Uk+2Su1y7u/6Z8KJ24D7lepUjFZbhFOrmDfuQ=
 github.com/champo/mobile v0.0.0-20220505154254-6a5f99bae305 h1:YgqwiwLKFqs1/d9BNXUduBA7YZ+uzfrjsKPzXBYAHsw=
 github.com/champo/mobile v0.0.0-20220505154254-6a5f99bae305/go.mod h1:pe2sM7Uk+2Su1y7u/6Z8KJ24D7lepUjFZbhFOrmDfuQ=
+github.com/champo/mobile v0.0.0-20220906180709-3705947d69ae h1:sVhWE744S444BYFPcsJPNMLorDFhyPfqNiTb2Y1HWi0=
+github.com/champo/mobile v0.0.0-20220906180709-3705947d69ae/go.mod h1:pe2sM7Uk+2Su1y7u/6Z8KJ24D7lepUjFZbhFOrmDfuQ=
 github.com/client9/misspell v0.3.4 h1:ta993UF76GwbvJcIo3Y68y/M3WxlpEHPWIGDkJYwzJI=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/coreos/bbolt v1.3.3 h1:n6AiVyVRKQFNb6mJlwESEvvLoDyiTzXX7ORAUlkeBdY=

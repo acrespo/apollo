@@ -26,4 +26,4 @@ require (
 )
 
 // Fork that includes the -cache flag for quicker builds
-replace golang.org/x/mobile => github.com/champo/mobile v0.0.0-20220906180709-3705947d69ae
+replace golang.org/x/mobile => github.com/champo/mobile v0.0.0-20220913162405-8cc629edd37b

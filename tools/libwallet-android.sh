@@ -38,6 +38,7 @@ fi
 GOMODCACHE="$GOMODCACHE" \
     go run golang.org/x/mobile/cmd/gomobile bind \
     -target="android" -o "$libwallet" \
+    -androidapi 19 \
     -cache  "$GOCACHE"\
     -trimpath -ldflags="-buildid=. -v" \
     . ./newop

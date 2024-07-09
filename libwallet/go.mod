@@ -22,4 +22,4 @@ require (
 )
 
 // Fork that includes the -cache flag for quicker builds
-replace golang.org/x/mobile => github.com/darbelo-muun/mobile v0.0.0-20240708204034-b9b3829923d8
+replace golang.org/x/mobile => github.com/muun/mobile v0.0.0-20240709203120-049ae58602a0

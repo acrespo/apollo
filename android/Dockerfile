@@ -13,7 +13,6 @@ RUN apt-get update \
         curl \
         git \
         zip \
-        build-essential\
     && rm -rf /var/lib/apt/lists/*
 
 

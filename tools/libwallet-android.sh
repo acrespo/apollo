@@ -5,6 +5,9 @@ set -e
 repo_root=$(git rev-parse --show-toplevel)
 build_dir="$repo_root/libwallet/.build"
 
+# Install and setup gomobile on demand (no-op if already installed and up-to-date)
+. "$repo_root"/tools/bootstrap-gomobile.sh
+
 # OSS project has a different folder libwallet aar, so we receive it as param
 libwallet="$1"
 if [[ ! -s "$1" ]]; then
@@ -38,6 +41,7 @@ fi
 GOMODCACHE="$GOMODCACHE" \
     go run golang.org/x/mobile/cmd/gomobile bind \
     -target="android" -o "$libwallet" \
+    -androidapi 19 \
     -cache  "$GOCACHE"\
     -trimpath -ldflags="-buildid=. -v" \
     . ./newop

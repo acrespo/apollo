@@ -2,6 +2,7 @@ package io.muun.apollo.data.net;
 
 import io.muun.apollo.data.net.base.BaseClient;
 import io.muun.apollo.data.net.okio.ContentUriRequestBody;
+import io.muun.apollo.data.os.ActivityManagerInfoProvider;
 import io.muun.apollo.data.os.BuildInfoProvider;
 import io.muun.apollo.data.os.CpuInfoProvider;
 import io.muun.apollo.data.os.FileInfoProvider;
@@ -22,6 +23,7 @@ import io.muun.apollo.domain.errors.newop.InvoiceMissingAmountException;
 import io.muun.apollo.domain.errors.newop.NoPaymentRouteException;
 import io.muun.apollo.domain.errors.newop.SwapFailedException;
 import io.muun.apollo.domain.errors.newop.UnreachableNodeException;
+import io.muun.apollo.domain.libwallet.FeeBumpRefreshPolicy;
 import io.muun.apollo.domain.libwallet.Invoice;
 import io.muun.apollo.domain.model.ChallengeKeyUpdateMigration;
 import io.muun.apollo.domain.model.Contact;
@@ -29,6 +31,7 @@ import io.muun.apollo.domain.model.CreateFirstSessionOk;
 import io.muun.apollo.domain.model.CreateSessionOk;
 import io.muun.apollo.domain.model.CreateSessionRcOk;
 import io.muun.apollo.domain.model.EmergencyKitExport;
+import io.muun.apollo.domain.model.FulfillmentPushedResult;
 import io.muun.apollo.domain.model.IncomingSwapFulfillmentData;
 import io.muun.apollo.domain.model.NextTransactionSize;
 import io.muun.apollo.domain.model.NotificationReport;
@@ -59,11 +62,13 @@ import io.muun.common.api.IntegrityCheck;
 import io.muun.common.api.IntegrityStatus;
 import io.muun.common.api.KeySet;
 import io.muun.common.api.LinkActionJson;
+import io.muun.common.api.OperationJson;
 import io.muun.common.api.PasswordSetupJson;
 import io.muun.common.api.PhoneConfirmation;
 import io.muun.common.api.PlayIntegrityTokenJson;
 import io.muun.common.api.PreimageJson;
 import io.muun.common.api.PublicKeySetJson;
+import io.muun.common.api.PushTransactionsJson;
 import io.muun.common.api.RawTransaction;
 import io.muun.common.api.SetupChallengeResponse;
 import io.muun.common.api.UpdateOperationMetadataJson;
@@ -97,6 +102,7 @@ import rx.Completable;
 import rx.Observable;
 import rx.Single;
 
+import java.util.ArrayList;
 import java.util.List;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
@@ -126,6 +132,8 @@ public class HoustonClient extends BaseClient<HoustonService> {
 
     private final SystemCapabilitiesProvider systemCapabilitiesProvider;
 
+    private final ActivityManagerInfoProvider activityManagerInfoProvider;
+
     /**
      * Constructor.
      */
@@ -140,7 +148,8 @@ public class HoustonClient extends BaseClient<HoustonService> {
             BuildInfoProvider buildInfoProvider,
             PackageManagerInfoProvider packageManagerInfoProvider,
             FileInfoProvider fileInfoProvider,
-            SystemCapabilitiesProvider systemCapabilitiesProvider
+            SystemCapabilitiesProvider systemCapabilitiesProvider,
+            ActivityManagerInfoProvider activityManagerInfoProvider
     ) {
 
         super(HoustonService.class);
@@ -155,6 +164,7 @@ public class HoustonClient extends BaseClient<HoustonService> {
         this.packageManagerInfoProvider = packageManagerInfoProvider;
         this.fileInfoProvider = fileInfoProvider;
         this.systemCapabilitiesProvider = systemCapabilitiesProvider;
+        this.activityManagerInfoProvider = activityManagerInfoProvider;
     }
 
     /**
@@ -194,7 +204,9 @@ public class HoustonClient extends BaseClient<HoustonService> {
                 fileInfoProvider.getAppSize(),
                 hardwareCapabilitiesProvider.getHardwareAddresses(),
                 systemCapabilitiesProvider.getVbMeta(),
-                fileInfoProvider.getEfsCreationTimeInSeconds()
+                fileInfoProvider.getEfsCreationTimeInSeconds(),
+                activityManagerInfoProvider.isLowRamDevice(),
+                packageManagerInfoProvider.getFirstInstallTimeInMs()
         );
 
         return getService().createFirstSession(params)
@@ -236,7 +248,9 @@ public class HoustonClient extends BaseClient<HoustonService> {
                 fileInfoProvider.getAppSize(),
                 hardwareCapabilitiesProvider.getHardwareAddresses(),
                 systemCapabilitiesProvider.getVbMeta(),
-                fileInfoProvider.getEfsCreationTimeInSeconds()
+                fileInfoProvider.getEfsCreationTimeInSeconds(),
+                activityManagerInfoProvider.isLowRamDevice(),
+                packageManagerInfoProvider.getFirstInstallTimeInMs()
         );
 
         return getService().createLoginSession(params)
@@ -278,8 +292,9 @@ public class HoustonClient extends BaseClient<HoustonService> {
                 fileInfoProvider.getAppSize(),
                 hardwareCapabilitiesProvider.getHardwareAddresses(),
                 systemCapabilitiesProvider.getVbMeta(),
-                fileInfoProvider.getEfsCreationTimeInSeconds()
-
+                fileInfoProvider.getEfsCreationTimeInSeconds(),
+                activityManagerInfoProvider.isLowRamDevice(),
+                packageManagerInfoProvider.getFirstInstallTimeInMs()
         );
 
         return getService().createRecoveryCodeLoginSession(session)
@@ -591,10 +606,14 @@ public class HoustonClient extends BaseClient<HoustonService> {
     public Observable<OperationCreated> newOperation(
             final OperationWithMetadata operation,
             final List<String> outpoints,
-            final MusigNonces musigNonces
+            final MusigNonces musigNonces,
+            final List<MusigNonces> alternativeTxNonces
     ) {
+        final OperationJson operationJson =
+                apiMapper.mapOperation(operation, outpoints, musigNonces, alternativeTxNonces);
+
         return getService()
-                .newOperation(apiMapper.mapOperation(operation, outpoints, musigNonces))
+                .newOperation(operationJson)
                 .map(modelMapper::mapOperationCreated);
     }
 
@@ -611,29 +630,44 @@ public class HoustonClient extends BaseClient<HoustonService> {
 
     /**
      * Pushes a raw transaction to Houston.
-     *
-     * @param txHex        The bitcoinj's transaction.
-     * @param operationHid The houston operation id.
      */
-    public Observable<TransactionPushed> pushTransaction(
+    public Observable<TransactionPushed> pushTransactions(
             @Nullable String txHex,
+            @Nullable List<String> alternativeTransactionsHex,
             long operationHid
     ) {
+        final RawTransaction rawTransaction;
+        final ArrayList<RawTransaction> alternativeTransactions = new ArrayList<RawTransaction>();
+
         if (txHex != null) {
-            return getService()
-                    .pushTransaction(new RawTransaction(txHex), operationHid)
-                    // This can happen if we determine the payment can't actually be made. If so, we
-                    // fail fast to avoid broadcasting a transaction saving the user on miner fees.
-                    .compose(ObservableFn.replaceHttpException(
-                            ErrorCode.SWAP_FAILED,
-                            SwapFailedException::new
-                    ))
-                    .map(modelMapper::mapTransactionPushed);
+            Preconditions.checkArgument(alternativeTransactionsHex != null);
+
+            rawTransaction = new RawTransaction(txHex);
+
+            for (var transactionHex : alternativeTransactionsHex) {
+                alternativeTransactions.add(new RawTransaction(transactionHex));
+            }
+
         } else {
-            return getService()
-                    .pushTransaction(operationHid) // empty body when txHex is not given
-                    .map(modelMapper::mapTransactionPushed);
+            Preconditions.checkArgument(alternativeTransactionsHex == null);
+
+            rawTransaction = null;
         }
+
+        final var json = new PushTransactionsJson(
+                rawTransaction,
+                alternativeTransactions
+        );
+
+        return getService()
+                .pushTransactions(json, operationHid)
+                // This can happen if we determine the payment can't actually be made. If so, we
+                // fail fast to avoid broadcasting a transaction saving the user on miner fees.
+                .compose(ObservableFn.replaceHttpException(
+                        ErrorCode.SWAP_FAILED,
+                        SwapFailedException::new
+                ))
+                .map(modelMapper::mapTransactionPushed);
     }
 
     /**
@@ -714,10 +748,13 @@ public class HoustonClient extends BaseClient<HoustonService> {
      * @param sizeProgression from NTS
      */
     public Observable<RealTimeFees> fetchRealTimeFees(
-            List<SizeForAmount> sizeProgression
+            List<SizeForAmount> sizeProgression,
+            FeeBumpRefreshPolicy feeBumpRefreshPolicy
     ) {
         return getService()
-                .fetchRealTimeFees(apiMapper.mapUnconfirmedOutpointsJson(sizeProgression))
+                .fetchRealTimeFees(
+                        apiMapper.mapRealTimeFeesRequestJson(sizeProgression, feeBumpRefreshPolicy)
+                )
                 .map(modelMapper::mapRealTimeFees);
     }
 
@@ -834,12 +871,13 @@ public class HoustonClient extends BaseClient<HoustonService> {
     /**
      * Push the fulfillment TX for an incoming swap.
      */
-    public Completable pushFulfillmentTransaction(
+    public Single<FulfillmentPushedResult> pushFulfillmentTransaction(
             final String incomingSwap,
             final RawTransaction rawTransaction
     ) {
 
-        return getService().pushFulfillmentTransaction(incomingSwap, rawTransaction);
+        return getService().pushFulfillmentTransaction(incomingSwap, rawTransaction)
+                .map(modelMapper::mapFulfillmentPushed);
     }
 
     /**

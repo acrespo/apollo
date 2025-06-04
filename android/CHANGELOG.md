@@ -6,6 +6,35 @@ follow [https://changelog.md/](https://changelog.md/) guidelines.
 
 ## [Unreleased]
 
+## [53.4] - 2025-05-29
+
+### CHANGED
+
+- Added multi APK support to bypass 100MB APK size limit.
+
+## [53.3] - 2025-04-08
+
+### FIXED
+
+- Proper fix for non ascii chars in http headers
+
+## [53.2] - 2025-03-24
+
+### ADDED
+
+- Alternative transactions signing
+
+## [53.1] - 2025-02-21
+
+### ADDED
+
+- Revamped real time fees calculation
+- Background notification processing reliability improvements
+
+### FIXED
+
+- Non deterministic bug regarding hardened key derivation
+
 ## [52.7] - 2025-01-30
 
 ### ADDED

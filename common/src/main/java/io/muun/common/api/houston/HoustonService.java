@@ -18,6 +18,7 @@ import io.muun.common.api.DiffJson;
 import io.muun.common.api.ExportEmergencyKitJson;
 import io.muun.common.api.ExternalAddressesRecord;
 import io.muun.common.api.FeedbackJson;
+import io.muun.common.api.FulfillmentPushedJson;
 import io.muun.common.api.IncomingSwapFulfillmentDataJson;
 import io.muun.common.api.IntegrityCheck;
 import io.muun.common.api.IntegrityStatus;
@@ -36,15 +37,16 @@ import io.muun.common.api.PlayIntegrityTokenJson;
 import io.muun.common.api.PreimageJson;
 import io.muun.common.api.PublicKeySetJson;
 import io.muun.common.api.PublicProfileJson;
+import io.muun.common.api.PushTransactionsJson;
 import io.muun.common.api.RawTransaction;
 import io.muun.common.api.RealTimeData;
 import io.muun.common.api.RealTimeFeesJson;
+import io.muun.common.api.RealTimeFeesRequestJson;
 import io.muun.common.api.SetupChallengeResponse;
 import io.muun.common.api.StartEmailSetupJson;
 import io.muun.common.api.SubmarineSwapJson;
 import io.muun.common.api.SubmarineSwapRequestJson;
 import io.muun.common.api.TransactionPushedJson;
-import io.muun.common.api.UnconfirmedOutpointsJson;
 import io.muun.common.api.UpdateOperationMetadataJson;
 import io.muun.common.api.UserInvoiceJson;
 import io.muun.common.api.UserJson;
@@ -244,7 +246,7 @@ public interface HoustonService {
 
     @POST("realtime/fees")
     Observable<RealTimeFeesJson> fetchRealTimeFees(
-            @Body UnconfirmedOutpointsJson unconfirmedOutpoints
+            @Body RealTimeFeesRequestJson unconfirmedOutpoints
     );
 
     @GET("operations")
@@ -259,14 +261,11 @@ public interface HoustonService {
     Completable updateOperationMetadata(@Path("operationId") Long operationId,
                                         @Body UpdateOperationMetadataJson data);
 
-    @PUT("operations/{operationId}/raw-transaction")
-    Observable<TransactionPushedJson> pushTransaction(@Path("operationId") Long operationId);
-
     @NetworkRetry(count = 0)    // No retries. Avoid Musig nonces reuse!
     @ServerRetry(count = 0)     // No retries. Avoid Musig nonces reuse!
-    @PUT("operations/{operationId}/raw-transaction")
-    Observable<TransactionPushedJson> pushTransaction(@Body RawTransaction rawTransaction,
-                                                      @Path("operationId") Long operationId);
+    @PUT("operations/{operationId}/raw-transactions")
+    Observable<TransactionPushedJson> pushTransactions(@Body PushTransactionsJson pushTransactions,
+                                                       @Path("operationId") Long operationId);
 
     @GET("operations/next-transaction-size")
     Observable<NextTransactionSizeJson> fetchNextTransactionSize();
@@ -285,7 +284,7 @@ public interface HoustonService {
             @Path("incomingSwapUuid") String incomingSwapUuid);
 
     @PUT("incoming-swaps/{incomingSwapUuid}/fulfillment")
-    Completable pushFulfillmentTransaction(
+    Single<FulfillmentPushedJson> pushFulfillmentTransaction(
             @Path("incomingSwapUuid") String incomingSwapUuid,
             @Body RawTransaction tx);
 

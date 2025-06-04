@@ -8,7 +8,10 @@ import io.muun.apollo.data.preferences.UserRepository;
 import io.muun.apollo.domain.action.ContactActions;
 import io.muun.apollo.domain.action.base.BaseAsyncAction1;
 import io.muun.apollo.domain.errors.newop.PushTransactionSlowError;
+import io.muun.apollo.domain.libwallet.FeeBumpRefreshPolicy;
 import io.muun.apollo.domain.libwallet.LibwalletBridge;
+import io.muun.apollo.domain.libwallet.LibwalletService;
+import io.muun.apollo.domain.libwallet.model.SigningExpectations;
 import io.muun.apollo.domain.model.Contact;
 import io.muun.apollo.domain.model.Operation;
 import io.muun.apollo.domain.model.OperationCreated;
@@ -16,6 +19,7 @@ import io.muun.apollo.domain.model.OperationWithMetadata;
 import io.muun.apollo.domain.model.PaymentRequest;
 import io.muun.apollo.domain.model.PreparedPayment;
 import io.muun.apollo.domain.model.SubmarineSwap;
+import io.muun.apollo.domain.model.tx.PartiallySignedTransaction;
 import io.muun.apollo.domain.utils.ExtensionsKt;
 import io.muun.common.crypto.hd.MuunAddress;
 import io.muun.common.crypto.hd.PrivateKey;
@@ -23,6 +27,7 @@ import io.muun.common.crypto.hd.PublicKey;
 import io.muun.common.exception.MissingCaseError;
 import io.muun.common.model.OperationStatus;
 import io.muun.common.utils.Encodings;
+import io.muun.common.utils.Preconditions;
 
 import androidx.annotation.VisibleForTesting;
 import libwallet.Libwallet;
@@ -30,6 +35,7 @@ import libwallet.MusigNonces;
 import libwallet.Transaction;
 import rx.Observable;
 
+import java.util.ArrayList;
 import java.util.List;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -52,6 +58,8 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
     private final ContactActions contactActions;
     private final OperationMetadataMapper operationMapper;
 
+    private final LibwalletService libwalletService;
+
     /**
      * Submit an outgoing payment to Houston, and update local data in response.
      */
@@ -62,7 +70,8 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
                                PublicProfileDao publicProfileDao,
                                HoustonClient houstonClient,
                                ContactActions contactActions,
-                               OperationMetadataMapper operationMetadataMapper) {
+                               OperationMetadataMapper operationMetadataMapper,
+                               LibwalletService libwalletService) {
 
         this.createOperation = createOperation;
         this.userRepository = userRepository;
@@ -71,6 +80,7 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
         this.houstonClient = houstonClient;
         this.contactActions = contactActions;
         this.operationMapper = operationMetadataMapper;
+        this.libwalletService = libwalletService;
     }
 
     @Override
@@ -86,58 +96,110 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
 
         final List<String> outpoints = prepPayment.outpoints;
 
-        final int nonceCount = outpoints.size();
-        final MusigNonces musigNonces = Libwallet.generateMusigNonces(nonceCount);
+        final int maxAlternativeTransactions;
+        if (prepPayment.swap != null
+                && !prepPayment.swap.isLend()
+                && prepPayment.swap.getFundingOutput().getConfirmationsNeeded() == 0
+                && prepPayment.swap.getMaxAlternativeTransactions() != null) {
+            maxAlternativeTransactions = prepPayment.swap.getMaxAlternativeTransactions();
+        } else {
+            maxAlternativeTransactions = 0;
+        }
 
-        return Observable.defer(keysRepository::getBasePrivateKey)
-                .flatMap(baseUserPrivKey -> newOperation(opWithMetadata, outpoints, musigNonces)
-                        .flatMap(opCreated -> {
-                            final Operation houstonOp =
-                                    operationMapper.mapFromMetadata(opCreated.operation);
+        final MusigNonces musigNonces = Libwallet.generateMusigNonces(outpoints.size());
+        final List<MusigNonces> alternativeTxNonces = new ArrayList<>();
+        for (var i = 0; i < maxAlternativeTransactions; i++) {
+            alternativeTxNonces.add(Libwallet.generateMusigNonces(outpoints.size()));
+        }
 
-                            final String transactionHex = op.isLendingSwap()
-                                    ? null // money was lent, involves no actual transaction
-                                    : signToHex(op, baseUserPrivKey, opCreated, musigNonces);
+        return houstonClient.newOperation(
+                opWithMetadata,
+                outpoints,
+                musigNonces,
+                alternativeTxNonces
+        ).flatMap(opCreated -> {
 
-                            // Maybe Houston identified the receiver for us:
-                            final Operation mergedOperation = op.mergeWithUpdate(houstonOp);
+            Preconditions.checkArgument(
+                    opCreated.alternativeTransactions.size() <= maxAlternativeTransactions
+            );
 
-                            return houstonClient
-                                    .pushTransaction(transactionHex, houstonOp.getHid())
-                                    .flatMap(txPushed -> {
-                                        // Maybe Houston updated the operation status:
-                                        mergedOperation.status = txPushed.operation.getStatus();
+            final Operation houstonOp =
+                    operationMapper.mapFromMetadata(opCreated.operation);
 
-                                        return createOperation.action(
-                                                mergedOperation, txPushed.nextTransactionSize
-                                        );
-                                    })
-                                    .onErrorResumeNext(t -> {
-                                        if (ExtensionsKt.isInstanceOrIsCausedByTimeoutError(t)) {
+            final String transactionHex;
+            final List<String> alternativeTransactionsHex;
 
-                                            // Most times, a timeout just means that the tx will
-                                            // eventually be pushed, albeit slightly delayed. This
-                                            // way the app stores the operation/payment and can
-                                            // update its state once it receives a notification
-                                            mergedOperation.status = OperationStatus.FAILED;
+            if (op.isLendingSwap()) {
+                // money was lent, involves no actual transaction
+                transactionHex = null;
+                alternativeTransactionsHex = null;
+            } else {
+                final var userPrivKey = keysRepository.getBasePrivateKey().toBlocking().first();
 
-                                            return createOperation.saveOperation(mergedOperation)
-                                                    .flatMap(operation ->
-                                                            Observable.error(
-                                                                    new PushTransactionSlowError(t)
-                                                            )
-                                                    );
-                                        } else {
-                                            return Observable.error(t);
-                                        }
-                                    });
-                        }));
-    }
+                transactionHex = signToHex(
+                        op,
+                        userPrivKey,
+                        musigNonces,
+                        buildSigningExpectations(op, opCreated, false),
+                        opCreated.partiallySignedTransaction
+                );
 
-    private Observable<OperationCreated> newOperation(OperationWithMetadata operationWithMetadata,
-                                                      List<String> outpoints,
-                                                      MusigNonces nonces) {
-        return houstonClient.newOperation(operationWithMetadata, outpoints, nonces);
+                alternativeTransactionsHex = new ArrayList<>();
+                for (int i = 0; i < opCreated.alternativeTransactions.size(); i++) {
+
+                    alternativeTransactionsHex.add(
+                            signToHex(
+                                    op,
+                                    userPrivKey,
+                                    alternativeTxNonces.get(i),
+                                    buildSigningExpectations(op, opCreated, true),
+                                    opCreated.alternativeTransactions.get(i)
+                            )
+                    );
+                }
+            }
+
+            // Maybe Houston identified the receiver for us:
+            final Operation mergedOperation = op.mergeWithUpdate(houstonOp);
+
+            return houstonClient.pushTransactions(
+                            transactionHex,
+                            alternativeTransactionsHex,
+                            houstonOp.getHid()
+                    )
+                    .flatMap(txPushed -> {
+                        // Maybe Houston updated the operation status:
+                        mergedOperation.status = txPushed.operation.getStatus();
+
+                        libwalletService.persistFeeBumpFunctions(
+                                txPushed.feeBumpFunctions,
+                                FeeBumpRefreshPolicy.NTS_CHANGED
+                        );
+
+                        return createOperation.action(
+                                mergedOperation, txPushed.nextTransactionSize
+                        );
+                    })
+                    .onErrorResumeNext(t -> {
+                        if (ExtensionsKt.isInstanceOrIsCausedByTimeoutError(t)) {
+
+                            // Most times, a timeout just means that the tx will
+                            // eventually be pushed, albeit slightly delayed. This
+                            // way the app stores the operation/payment and can
+                            // update its state once it receives a notification
+                            mergedOperation.status = OperationStatus.FAILED;
+
+                            return createOperation.saveOperation(mergedOperation)
+                                    .flatMap(operation ->
+                                            Observable.error(
+                                                    new PushTransactionSlowError(t)
+                                            )
+                                    );
+                        } else {
+                            return Observable.error(t);
+                        }
+                    });
+        });
     }
 
     private OperationWithMetadata buildOperationWithMetadata(
@@ -161,27 +223,22 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
     private String signToHex(
             final Operation operation,
             final PrivateKey baseUserPrivateKey,
-            final OperationCreated operationCreated,
-            final MusigNonces musigNonces
+            final MusigNonces musigNonces,
+            final SigningExpectations signingExpectations,
+            final PartiallySignedTransaction partiallySignedTransaction
     ) {
 
         final PublicKey baseMuunPublicKey = keysRepository
                 .getBaseMuunPublicKey();
 
-        // Extract data from response:
-        final MuunAddress changeAddress = operationCreated.changeAddress;
-
-        // Update the operation from Houston's response:
-        operation.changeAddress = changeAddress;
-
         // Produce the signed Bitcoin transaction:
         final Transaction txInfo = LibwalletBridge.sign(
-                operation,
                 baseUserPrivateKey,
                 baseMuunPublicKey,
-                operationCreated.partiallySignedTransaction,
+                partiallySignedTransaction,
                 Globals.INSTANCE.getNetwork(),
-                musigNonces
+                musigNonces,
+                signingExpectations
         );
 
         // Update the Operation after signing:
@@ -189,6 +246,24 @@ public class SubmitPaymentAction extends BaseAsyncAction1<
 
         // Encode signed transaction:
         return Encodings.bytesToHex(txInfo.getBytes());
+    }
+
+    private static SigningExpectations buildSigningExpectations(
+            final Operation operation,
+            final OperationCreated operationCreated,
+            boolean isAlternativeTx
+    ) {
+        final long outputAmount = operation.swap != null
+                ? operation.swap.getFundingOutput().getOutputAmountInSatoshis()
+                : operation.amount.inSatoshis;
+
+        return new SigningExpectations(
+                operation.receiverAddress,
+                outputAmount,
+                operationCreated.changeAddress,
+                operation.fee.inSatoshis,
+                isAlternativeTx
+        );
     }
 
     /**

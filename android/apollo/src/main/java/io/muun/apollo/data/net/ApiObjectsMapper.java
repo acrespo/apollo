@@ -7,6 +7,7 @@ import io.muun.apollo.data.os.GooglePlayHelper;
 import io.muun.apollo.data.os.GooglePlayServicesHelper;
 import io.muun.apollo.data.os.PackageManagerInfoProvider;
 import io.muun.apollo.data.serialization.dates.ApolloZonedDateTime;
+import io.muun.apollo.domain.libwallet.FeeBumpRefreshPolicy;
 import io.muun.apollo.domain.libwallet.Invoice;
 import io.muun.apollo.domain.model.BackgroundEvent;
 import io.muun.apollo.domain.model.BitcoinAmount;
@@ -44,9 +45,9 @@ import io.muun.common.api.PasswordSetupJson;
 import io.muun.common.api.PhoneNumberJson;
 import io.muun.common.api.PublicKeyJson;
 import io.muun.common.api.PublicProfileJson;
+import io.muun.common.api.RealTimeFeesRequestJson;
 import io.muun.common.api.StartEmailSetupJson;
 import io.muun.common.api.SubmarineSwapRequestJson;
-import io.muun.common.api.UnconfirmedOutpointsJson;
 import io.muun.common.api.UserInvoiceJson;
 import io.muun.common.api.UserProfileJson;
 import io.muun.common.crypto.ChallengePublicKey;
@@ -62,6 +63,7 @@ import io.muun.common.model.challenge.ChallengeSignature;
 import io.muun.common.utils.BitcoinUtils;
 import io.muun.common.utils.Encodings;
 import io.muun.common.utils.Pair;
+import io.muun.common.utils.Preconditions;
 
 import android.os.SystemClock;
 import androidx.annotation.NonNull;
@@ -143,14 +145,23 @@ public class ApiObjectsMapper {
     public OperationJson mapOperation(
             final @NotNull OperationWithMetadata operation,
             final List<String> outpoints,
-            final MusigNonces musigNonces
+            final MusigNonces musigNonces,
+            final List<MusigNonces> alternativeTxNonces
     ) {
 
         final Long outputAmountInSatoshis = mapOutputAmountInSatoshis(operation);
 
         final List<String> userPublicNoncesHex = new LinkedList<>();
-        for (int i = 0; i < outpoints.size(); i++) {
+        final long noncesCount = musigNonces.length();
+        for (int i = 0; i < noncesCount; i++) {
             userPublicNoncesHex.add(musigNonces.getPubnonceHex(i));
+        }
+
+        for (final MusigNonces nonces : alternativeTxNonces) {
+            Preconditions.checkState(noncesCount == nonces.length());
+            for (int i = 0; i < noncesCount; i++) {
+                userPublicNoncesHex.add(nonces.getPubnonceHex(i));
+            }
         }
 
         return new OperationJson(
@@ -232,7 +243,9 @@ public class ApiObjectsMapper {
             final long appSize,
             final List<String> hardwareAddresses,
             final String vbMeta,
-            final String efsCreationTimeInSeconds
+            final String efsCreationTimeInSeconds,
+            final Boolean isLowRamDevice,
+            final Long firstInstallTimeInMs
     ) {
         return new ClientJson(
                 ClientTypeJson.APOLLO,
@@ -278,7 +291,9 @@ public class ApiObjectsMapper {
                 appSize,
                 hardwareAddresses,
                 vbMeta,
-                efsCreationTimeInSeconds
+                efsCreationTimeInSeconds,
+                isLowRamDevice,
+                firstInstallTimeInMs
         );
     }
 
@@ -415,7 +430,9 @@ public class ApiObjectsMapper {
             final Long appSize,
             final List<String> hardwareAddresses,
             final String vbMeta,
-            final String efsCreationTimeInSeconds
+            final String efsCreationTimeInSeconds,
+            final Boolean isLowRamDevice,
+            final Long firstInstallTimeInMs
     ) {
 
         return new CreateFirstSessionJson(
@@ -442,7 +459,10 @@ public class ApiObjectsMapper {
                         appSize,
                         hardwareAddresses,
                         vbMeta,
-                        efsCreationTimeInSeconds
+                        efsCreationTimeInSeconds,
+                        isLowRamDevice,
+                        firstInstallTimeInMs
+
                 ),
                 gcmToken,
                 primaryCurrency,
@@ -479,7 +499,9 @@ public class ApiObjectsMapper {
             final Long appSize,
             final List<String> hardwareAddresses,
             final String vbMeta,
-            final String efsCreationTimeInSeconds
+            final String efsCreationTimeInSeconds,
+            final Boolean isLowRamDevice,
+            final Long firstInstallTimeInMs
     ) {
 
         return new CreateLoginSessionJson(
@@ -506,7 +528,9 @@ public class ApiObjectsMapper {
                         appSize,
                         hardwareAddresses,
                         vbMeta,
-                        efsCreationTimeInSeconds
+                        efsCreationTimeInSeconds,
+                        isLowRamDevice,
+                        firstInstallTimeInMs
                 ),
                 gcmToken,
                 email
@@ -541,7 +565,9 @@ public class ApiObjectsMapper {
             final Long appSize,
             final List<String> hardwareAddresses,
             final String vbMeta,
-            final String efsCreationTimeInSeconds
+            final String efsCreationTimeInSeconds,
+            final Boolean isLowRamDevice,
+            final Long firstInstallTimeInMs
     ) {
 
         return new CreateRcLoginSessionJson(
@@ -568,7 +594,9 @@ public class ApiObjectsMapper {
                         appSize,
                         hardwareAddresses,
                         vbMeta,
-                        efsCreationTimeInSeconds
+                        efsCreationTimeInSeconds,
+                        isLowRamDevice,
+                        firstInstallTimeInMs
                 ),
                 gcmToken,
                 new ChallengeKeyJson(
@@ -771,11 +799,12 @@ public class ApiObjectsMapper {
     }
 
     /**
-     *  Creates a UnconfirmedOutpointsJson.
+     *  Creates a RealTimeFeesRequestJson.
      */
     @NotNull
-    public UnconfirmedOutpointsJson mapUnconfirmedOutpointsJson(
-            @NotNull List<SizeForAmount> sizeProgression
+    public RealTimeFeesRequestJson mapRealTimeFeesRequestJson(
+            @NotNull List<SizeForAmount> sizeProgression,
+            @NotNull FeeBumpRefreshPolicy feeBumpRefreshPolicy
     ) {
         final List<String> unconfirmedUtxos = new ArrayList<>();
 
@@ -784,7 +813,28 @@ public class ApiObjectsMapper {
                 unconfirmedUtxos.add(sizeForAmount.outpoint);
             }
         }
+        ;
+        return new RealTimeFeesRequestJson(
+                unconfirmedUtxos,
+                mapFeeBumpRefreshPolicy(feeBumpRefreshPolicy)
+        );
+    }
 
-        return new UnconfirmedOutpointsJson(unconfirmedUtxos);
+    @NotNull
+    private RealTimeFeesRequestJson.FeeBumpRefreshPolicy mapFeeBumpRefreshPolicy(
+            @NotNull FeeBumpRefreshPolicy feeBumpRefreshPolicy
+    ) {
+        switch (feeBumpRefreshPolicy) {
+            case PERIODIC:
+                return RealTimeFeesRequestJson.FeeBumpRefreshPolicy.PERIODIC;
+            case FOREGROUND:
+                return RealTimeFeesRequestJson.FeeBumpRefreshPolicy.FOREGROUND;
+            case NTS_CHANGED:
+                return RealTimeFeesRequestJson.FeeBumpRefreshPolicy.CHANGED_NEXT_TRANSACTION_SIZE;
+            case NEW_OP_BLOCKINGLY:
+                return RealTimeFeesRequestJson.FeeBumpRefreshPolicy.NEW_OPERATION;
+            default:
+                throw new MissingCaseError(feeBumpRefreshPolicy);
+        }
     }
 }
